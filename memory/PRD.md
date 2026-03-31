@@ -42,6 +42,9 @@ Build an 8-Week PPO Execution Plan tracker for Airtel internship with:
 - Professional Airtel-branded UI with Outfit + IBM Plex Sans fonts
 - Real-time progress tracking
 - Responsive design
+- **Calendar View** - Monthly calendar showing tasks by due date
+- **Export to PDF** - Professional progress report with jspdf
+- **Export to Excel** - Multi-sheet workbook with summary + all tasks
 
 ## API Endpoints
 - POST /api/auth/login - Login

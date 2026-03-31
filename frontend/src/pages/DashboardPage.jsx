@@ -12,12 +12,18 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { 
   LogOut, Users, ChevronDown, ChevronUp, Plus, Trash2, 
   Calendar as CalendarIcon, MessageSquare, Edit2, Check, X, 
-  Save, MoreVertical, Clock
+  MoreVertical, Clock, List, FileText, FileSpreadsheet,
+  ChevronLeft, ChevronRight, Download
 } from "lucide-react";
-import { format } from "date-fns";
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, addMonths, subMonths, parseISO, isValid } from "date-fns";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
+import { saveAs } from "file-saver";
 
 const DashboardPage = () => {
   const navigate = useNavigate();
@@ -32,6 +38,10 @@ const DashboardPage = () => {
   const [newTaskDueDate, setNewTaskDueDate] = useState(null);
   const [commentDialog, setCommentDialog] = useState({ open: false, weekId: null, taskId: null, task: null });
   const [newComment, setNewComment] = useState("");
+  const [viewMode, setViewMode] = useState("list"); // "list" or "calendar"
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState(null);
+  const [dayTasksDialog, setDayTasksDialog] = useState({ open: false, date: null, tasks: [] });
 
   // Fetch weeks data
   const fetchWeeks = useCallback(async () => {
@@ -259,9 +269,223 @@ const DashboardPage = () => {
     }
   };
 
+  // Get tasks for a specific date
+  const getTasksForDate = (date) => {
+    const tasks = [];
+    weeks.forEach(week => {
+      (week.tasks || []).forEach(task => {
+        if (task.due_date) {
+          const taskDate = parseISO(task.due_date);
+          if (isValid(taskDate) && isSameDay(taskDate, date)) {
+            tasks.push({ ...task, weekId: week.id, weekTitle: week.title, weekNumber: week.week_number });
+          }
+        }
+      });
+    });
+    return tasks;
+  };
+
+  // Get all tasks with due dates for calendar
+  const getTasksWithDueDates = () => {
+    const tasksMap = {};
+    weeks.forEach(week => {
+      (week.tasks || []).forEach(task => {
+        if (task.due_date) {
+          const dateKey = task.due_date;
+          if (!tasksMap[dateKey]) {
+            tasksMap[dateKey] = [];
+          }
+          tasksMap[dateKey].push({ ...task, weekId: week.id, weekTitle: week.title });
+        }
+      });
+    });
+    return tasksMap;
+  };
+
+  // Export to PDF
+  const exportToPDF = () => {
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    
+    // Title
+    doc.setFontSize(20);
+    doc.setTextColor(228, 0, 0);
+    doc.text("Airtel 8-Week PPO Execution Plan", pageWidth / 2, 20, { align: "center" });
+    
+    // Subtitle
+    doc.setFontSize(12);
+    doc.setTextColor(100);
+    doc.text(`Progress Report - ${format(new Date(), "MMMM d, yyyy")}`, pageWidth / 2, 30, { align: "center" });
+    
+    // Overall Progress
+    const overallProgress = calculateOverallProgress();
+    const totalTasks = weeks.reduce((sum, w) => sum + (w.tasks?.length || 0), 0);
+    const completedTasks = weeks.reduce((sum, w) => sum + (w.tasks?.filter(t => t.completed).length || 0), 0);
+    
+    doc.setFontSize(14);
+    doc.setTextColor(0);
+    doc.text(`Overall Progress: ${overallProgress}% (${completedTasks}/${totalTasks} tasks completed)`, 14, 45);
+    
+    let yPos = 55;
+    
+    // Week by week breakdown
+    weeks.forEach((week, index) => {
+      if (yPos > 250) {
+        doc.addPage();
+        yPos = 20;
+      }
+      
+      const weekProgress = calculateWeekProgress(week);
+      const weekCompleted = week.tasks?.filter(t => t.completed).length || 0;
+      const weekTotal = week.tasks?.length || 0;
+      
+      doc.setFontSize(12);
+      doc.setTextColor(228, 0, 0);
+      doc.text(`Week ${week.week_number}: ${week.title}`, 14, yPos);
+      
+      doc.setFontSize(10);
+      doc.setTextColor(100);
+      doc.text(`${weekProgress}% complete (${weekCompleted}/${weekTotal})`, 14, yPos + 6);
+      
+      yPos += 12;
+      
+      // Task table
+      const taskData = (week.tasks || []).map(task => [
+        task.completed ? "✓" : "○",
+        task.title,
+        task.due_date ? format(parseISO(task.due_date), "MMM d, yyyy") : "-",
+        task.completed ? "Done" : "Pending"
+      ]);
+      
+      if (taskData.length > 0) {
+        autoTable(doc, {
+          startY: yPos,
+          head: [["", "Task", "Due Date", "Status"]],
+          body: taskData,
+          theme: "striped",
+          headStyles: { fillColor: [228, 0, 0] },
+          columnStyles: {
+            0: { cellWidth: 10 },
+            1: { cellWidth: 100 },
+            2: { cellWidth: 35 },
+            3: { cellWidth: 25 }
+          },
+          margin: { left: 14, right: 14 }
+        });
+        
+        yPos = doc.lastAutoTable.finalY + 15;
+      } else {
+        yPos += 10;
+      }
+    });
+    
+    // Footer
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.setTextColor(150);
+      doc.text(`Page ${i} of ${pageCount}`, pageWidth - 20, doc.internal.pageSize.getHeight() - 10);
+      doc.text("Airtel SCM Digital Transformation", 14, doc.internal.pageSize.getHeight() - 10);
+    }
+    
+    doc.save(`Airtel_PPO_Progress_${format(new Date(), "yyyy-MM-dd")}.pdf`);
+    toast.success("PDF exported successfully");
+  };
+
+  // Export to Excel
+  const exportToExcel = () => {
+    const workbook = XLSX.utils.book_new();
+    
+    // Summary sheet
+    const summaryData = [
+      ["Airtel 8-Week PPO Execution Plan"],
+      [`Report Date: ${format(new Date(), "MMMM d, yyyy")}`],
+      [],
+      ["Overall Progress", `${calculateOverallProgress()}%`],
+      ["Total Tasks", weeks.reduce((sum, w) => sum + (w.tasks?.length || 0), 0)],
+      ["Completed Tasks", weeks.reduce((sum, w) => sum + (w.tasks?.filter(t => t.completed).length || 0), 0)],
+      [],
+      ["Week", "Title", "Progress", "Completed", "Total"]
+    ];
+    
+    weeks.forEach(week => {
+      const weekCompleted = week.tasks?.filter(t => t.completed).length || 0;
+      const weekTotal = week.tasks?.length || 0;
+      summaryData.push([
+        `Week ${week.week_number}`,
+        week.title,
+        `${calculateWeekProgress(week)}%`,
+        weekCompleted,
+        weekTotal
+      ]);
+    });
+    
+    const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
+    XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
+    
+    // All tasks sheet
+    const tasksData = [
+      ["Week", "Task Title", "Due Date", "Status", "Comments"]
+    ];
+    
+    weeks.forEach(week => {
+      (week.tasks || []).forEach(task => {
+        tasksData.push([
+          `Week ${week.week_number}: ${week.title}`,
+          task.title,
+          task.due_date ? format(parseISO(task.due_date), "yyyy-MM-dd") : "",
+          task.completed ? "Completed" : "Pending",
+          (task.comments || []).length
+        ]);
+      });
+    });
+    
+    const tasksSheet = XLSX.utils.aoa_to_sheet(tasksData);
+    XLSX.utils.book_append_sheet(workbook, tasksSheet, "All Tasks");
+    
+    // Individual week sheets
+    weeks.forEach(week => {
+      const weekData = [
+        [`Week ${week.week_number}: ${week.title}`],
+        [`Progress: ${calculateWeekProgress(week)}%`],
+        [],
+        ["Task", "Due Date", "Status", "Comments"]
+      ];
+      
+      (week.tasks || []).forEach(task => {
+        weekData.push([
+          task.title,
+          task.due_date ? format(parseISO(task.due_date), "yyyy-MM-dd") : "",
+          task.completed ? "Completed" : "Pending",
+          (task.comments || []).map(c => c.text).join("; ")
+        ]);
+      });
+      
+      const weekSheet = XLSX.utils.aoa_to_sheet(weekData);
+      XLSX.utils.book_append_sheet(workbook, weekSheet, `Week ${week.week_number}`);
+    });
+    
+    // Generate and save
+    const excelBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([excelBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    saveAs(blob, `Airtel_PPO_Progress_${format(new Date(), "yyyy-MM-dd")}.xlsx`);
+    toast.success("Excel exported successfully");
+  };
+
   const overallProgress = calculateOverallProgress();
   const totalTasks = weeks.reduce((sum, w) => sum + (w.tasks?.length || 0), 0);
   const completedTasks = weeks.reduce((sum, w) => sum + (w.tasks?.filter(t => t.completed).length || 0), 0);
+
+  // Calendar view helpers
+  const monthStart = startOfMonth(currentMonth);
+  const monthEnd = endOfMonth(currentMonth);
+  const calendarDays = eachDayOfInterval({ start: monthStart, end: monthEnd });
+  const tasksMap = getTasksWithDueDates();
+
+  // Pad start of month to align with week
+  const startDay = monthStart.getDay();
+  const paddingDays = Array(startDay).fill(null);
 
   return (
     <div className="min-h-screen bg-gray-50" data-testid="dashboard-page">
@@ -333,12 +557,39 @@ const DashboardPage = () => {
             <CalendarIcon className="w-4 h-4" />
             8-Week PPO Execution Plan
           </div>
-          <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 font-['Outfit'] tracking-tight">
-            Track Your Internship Progress
-          </h2>
-          <p className="text-gray-600 mt-2">
-            Click any task or week title to edit · All changes auto-saved
-          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 font-['Outfit'] tracking-tight">
+                Track Your Internship Progress
+              </h2>
+              <p className="text-gray-600 mt-2">
+                Click any task or week title to edit · All changes auto-saved
+              </p>
+            </div>
+            
+            {/* Export Buttons */}
+            <div className="flex items-center gap-2">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" className="border-gray-300" data-testid="export-dropdown">
+                    <Download className="w-4 h-4 mr-2" />
+                    Export
+                    <ChevronDown className="w-4 h-4 ml-2" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={exportToPDF} data-testid="export-pdf">
+                    <FileText className="w-4 h-4 mr-2 text-red-600" />
+                    Export as PDF
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={exportToExcel} data-testid="export-excel">
+                    <FileSpreadsheet className="w-4 h-4 mr-2 text-green-600" />
+                    Export as Excel
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
         </div>
 
         {/* Overall Progress Card */}
@@ -355,124 +606,246 @@ const DashboardPage = () => {
           </p>
         </div>
 
-        {/* Week Cards */}
-        <div className="space-y-4">
-          {weeks.map((week) => {
-            const weekProgress = calculateWeekProgress(week);
-            const isExpanded = expandedWeeks[week.id];
-            const completedCount = week.tasks?.filter(t => t.completed).length || 0;
-            const totalCount = week.tasks?.length || 0;
+        {/* View Toggle */}
+        <div className="flex items-center justify-between mb-6">
+          <Tabs value={viewMode} onValueChange={setViewMode} className="w-auto">
+            <TabsList className="bg-gray-100">
+              <TabsTrigger value="list" className="data-[state=active]:bg-white" data-testid="list-view-tab">
+                <List className="w-4 h-4 mr-2" />
+                List View
+              </TabsTrigger>
+              <TabsTrigger value="calendar" className="data-[state=active]:bg-white" data-testid="calendar-view-tab">
+                <CalendarIcon className="w-4 h-4 mr-2" />
+                Calendar View
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
 
-            return (
-              <div
-                key={week.id}
-                className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden week-card"
-                data-testid={`week-${week.week_number}-card`}
-              >
-                {/* Week Header */}
+        {/* List View */}
+        {viewMode === "list" && (
+          <div className="space-y-4">
+            {weeks.map((week) => {
+              const weekProgress = calculateWeekProgress(week);
+              const isExpanded = expandedWeeks[week.id];
+              const completedCount = week.tasks?.filter(t => t.completed).length || 0;
+              const totalCount = week.tasks?.length || 0;
+
+              return (
                 <div
-                  className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors"
-                  onClick={() => toggleWeek(week.id)}
-                  data-testid={`week-${week.week_number}-header`}
+                  key={week.id}
+                  className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden week-card"
+                  data-testid={`week-${week.week_number}-card`}
                 >
-                  <div className="flex items-center gap-4 flex-1">
-                    <div className="flex items-center justify-center w-12 h-12 bg-[#E40000] text-white font-bold rounded-lg font-['Outfit']">
-                      W{week.week_number}
-                    </div>
-                    <div className="flex-1">
-                      {editingWeekTitle === week.id ? (
-                        <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                          <Input
-                            defaultValue={week.title}
-                            className="h-8 font-semibold text-lg"
-                            autoFocus
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                updateWeekTitle(week.id, e.target.value);
-                              } else if (e.key === "Escape") {
-                                setEditingWeekTitle(null);
-                              }
-                            }}
-                            onBlur={(e) => updateWeekTitle(week.id, e.target.value)}
-                            data-testid={`week-${week.week_number}-title-input`}
-                          />
+                  {/* Week Header */}
+                  <div
+                    className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors"
+                    onClick={() => toggleWeek(week.id)}
+                    data-testid={`week-${week.week_number}-header`}
+                  >
+                    <div className="flex items-center gap-4 flex-1">
+                      <div className="flex items-center justify-center w-12 h-12 bg-[#E40000] text-white font-bold rounded-lg font-['Outfit']">
+                        W{week.week_number}
+                      </div>
+                      <div className="flex-1">
+                        {editingWeekTitle === week.id ? (
+                          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                            <Input
+                              defaultValue={week.title}
+                              className="h-8 font-semibold text-lg"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  updateWeekTitle(week.id, e.target.value);
+                                } else if (e.key === "Escape") {
+                                  setEditingWeekTitle(null);
+                                }
+                              }}
+                              onBlur={(e) => updateWeekTitle(week.id, e.target.value)}
+                              data-testid={`week-${week.week_number}-title-input`}
+                            />
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-lg font-semibold text-gray-900 font-['Outfit']">
+                              {week.title}
+                            </h3>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingWeekTitle(week.id);
+                              }}
+                              className="text-gray-400 hover:text-[#E40000] transition-colors"
+                              data-testid={`week-${week.week_number}-edit-title`}
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-4 mt-1">
+                          <div className="w-32">
+                            <Progress value={weekProgress} className="h-2 bg-gray-100" data-testid={`week-${week.week_number}-progress`} />
+                          </div>
+                          <span className="text-sm text-gray-500">
+                            {completedCount}/{totalCount} tasks
+                          </span>
+                          <span className="text-sm font-medium text-[#E40000]">
+                            {weekProgress}%
+                          </span>
                         </div>
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          <h3 className="text-lg font-semibold text-gray-900 font-['Outfit']">
-                            {week.title}
-                          </h3>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditingWeekTitle(week.id);
-                            }}
-                            className="text-gray-400 hover:text-[#E40000] transition-colors"
-                            data-testid={`week-${week.week_number}-edit-title`}
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      )}
-                      <div className="flex items-center gap-4 mt-1">
-                        <div className="w-32">
-                          <Progress value={weekProgress} className="h-2 bg-gray-100" data-testid={`week-${week.week_number}-progress`} />
-                        </div>
-                        <span className="text-sm text-gray-500">
-                          {completedCount}/{totalCount} tasks
-                        </span>
-                        <span className="text-sm font-medium text-[#E40000]">
-                          {weekProgress}%
-                        </span>
                       </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {isExpanded ? (
-                      <ChevronUp className="w-5 h-5 text-gray-400" />
-                    ) : (
-                      <ChevronDown className="w-5 h-5 text-gray-400" />
-                    )}
-                  </div>
-                </div>
-
-                {/* Tasks List */}
-                {isExpanded && (
-                  <div className="border-t border-gray-100 p-4 animate-fade-in" data-testid={`week-${week.week_number}-tasks`}>
-                    <div className="space-y-2">
-                      {week.tasks?.map((task) => (
-                        <TaskItem
-                          key={task.id}
-                          task={task}
-                          weekId={week.id}
-                          weekNumber={week.week_number}
-                          editingTaskId={editingTaskId}
-                          setEditingTaskId={setEditingTaskId}
-                          toggleTaskCompletion={toggleTaskCompletion}
-                          updateTask={updateTask}
-                          deleteTask={deleteTask}
-                          openCommentDialog={(task) => setCommentDialog({ open: true, weekId: week.id, taskId: task.id, task })}
-                        />
-                      ))}
+                    <div className="flex items-center gap-2">
+                      {isExpanded ? (
+                        <ChevronUp className="w-5 h-5 text-gray-400" />
+                      ) : (
+                        <ChevronDown className="w-5 h-5 text-gray-400" />
+                      )}
                     </div>
-
-                    {/* Add Task Button */}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setAddTaskDialog({ open: true, weekId: week.id })}
-                      className="mt-4 text-[#E40000] hover:text-[#B30000] hover:bg-red-50"
-                      data-testid={`week-${week.week_number}-add-task`}
-                    >
-                      <Plus className="w-4 h-4 mr-2" />
-                      Add Task
-                    </Button>
                   </div>
-                )}
+
+                  {/* Tasks List */}
+                  {isExpanded && (
+                    <div className="border-t border-gray-100 p-4 animate-fade-in" data-testid={`week-${week.week_number}-tasks`}>
+                      <div className="space-y-2">
+                        {week.tasks?.map((task) => (
+                          <TaskItem
+                            key={task.id}
+                            task={task}
+                            weekId={week.id}
+                            weekNumber={week.week_number}
+                            editingTaskId={editingTaskId}
+                            setEditingTaskId={setEditingTaskId}
+                            toggleTaskCompletion={toggleTaskCompletion}
+                            updateTask={updateTask}
+                            deleteTask={deleteTask}
+                            openCommentDialog={(task) => setCommentDialog({ open: true, weekId: week.id, taskId: task.id, task })}
+                          />
+                        ))}
+                      </div>
+
+                      {/* Add Task Button */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setAddTaskDialog({ open: true, weekId: week.id })}
+                        className="mt-4 text-[#E40000] hover:text-[#B30000] hover:bg-red-50"
+                        data-testid={`week-${week.week_number}-add-task`}
+                      >
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Task
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Calendar View */}
+        {viewMode === "calendar" && (
+          <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-6" data-testid="calendar-view">
+            {/* Calendar Header */}
+            <div className="flex items-center justify-between mb-6">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setCurrentMonth(subMonths(currentMonth, 1))}
+                data-testid="calendar-prev-month"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </Button>
+              <h3 className="text-xl font-semibold text-gray-900 font-['Outfit']">
+                {format(currentMonth, "MMMM yyyy")}
+              </h3>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setCurrentMonth(addMonths(currentMonth, 1))}
+                data-testid="calendar-next-month"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </Button>
+            </div>
+
+            {/* Day Headers */}
+            <div className="grid grid-cols-7 gap-1 mb-2">
+              {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(day => (
+                <div key={day} className="text-center text-sm font-medium text-gray-500 py-2">
+                  {day}
+                </div>
+              ))}
+            </div>
+
+            {/* Calendar Grid */}
+            <div className="grid grid-cols-7 gap-1">
+              {/* Padding days */}
+              {paddingDays.map((_, index) => (
+                <div key={`pad-${index}`} className="h-24 bg-gray-50 rounded-lg"></div>
+              ))}
+              
+              {/* Calendar days */}
+              {calendarDays.map(day => {
+                const dateKey = format(day, "yyyy-MM-dd");
+                const dayTasks = tasksMap[dateKey] || [];
+                const isToday = isSameDay(day, new Date());
+                
+                return (
+                  <div
+                    key={dateKey}
+                    className={`h-24 border rounded-lg p-1 cursor-pointer transition-all hover:border-[#E40000] ${
+                      isToday ? "bg-red-50 border-[#E40000]" : "bg-white border-gray-200"
+                    }`}
+                    onClick={() => {
+                      if (dayTasks.length > 0) {
+                        setDayTasksDialog({ open: true, date: day, tasks: dayTasks });
+                      }
+                    }}
+                    data-testid={`calendar-day-${dateKey}`}
+                  >
+                    <div className={`text-sm font-medium mb-1 ${isToday ? "text-[#E40000]" : "text-gray-700"}`}>
+                      {format(day, "d")}
+                    </div>
+                    <div className="space-y-0.5 overflow-hidden">
+                      {dayTasks.slice(0, 2).map(task => (
+                        <div
+                          key={task.id}
+                          className={`text-xs px-1 py-0.5 rounded truncate ${
+                            task.completed ? "bg-green-100 text-green-700 line-through" : "bg-red-100 text-red-700"
+                          }`}
+                        >
+                          {task.title}
+                        </div>
+                      ))}
+                      {dayTasks.length > 2 && (
+                        <div className="text-xs text-gray-500 px-1">
+                          +{dayTasks.length - 2} more
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Legend */}
+            <div className="flex items-center gap-6 mt-6 pt-4 border-t border-gray-200">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded bg-red-100"></div>
+                <span className="text-sm text-gray-600">Pending</span>
               </div>
-            );
-          })}
-        </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded bg-green-100"></div>
+                <span className="text-sm text-gray-600">Completed</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded bg-red-50 border border-[#E40000]"></div>
+                <span className="text-sm text-gray-600">Today</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="mt-8 text-center text-sm text-gray-500">
@@ -601,6 +974,52 @@ const DashboardPage = () => {
                 <MessageSquare className="w-4 h-4" />
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Day Tasks Dialog */}
+      <Dialog open={dayTasksDialog.open} onOpenChange={(open) => !open && setDayTasksDialog({ open: false, date: null, tasks: [] })}>
+        <DialogContent className="sm:max-w-lg" data-testid="day-tasks-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-['Outfit']">
+              Tasks for {dayTasksDialog.date && format(dayTasksDialog.date, "MMMM d, yyyy")}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 max-h-96 overflow-y-auto">
+            {dayTasksDialog.tasks.map(task => (
+              <div
+                key={task.id}
+                className={`p-3 rounded-lg border ${
+                  task.completed ? "bg-green-50 border-green-200" : "bg-white border-gray-200"
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <Checkbox
+                    checked={task.completed}
+                    onCheckedChange={() => {
+                      toggleTaskCompletion(task.weekId, task.id, task.completed);
+                      // Update dialog state
+                      setDayTasksDialog(prev => ({
+                        ...prev,
+                        tasks: prev.tasks.map(t => 
+                          t.id === task.id ? { ...t, completed: !t.completed } : t
+                        )
+                      }));
+                    }}
+                    className="mt-1 data-[state=checked]:bg-[#E40000] data-[state=checked]:border-[#E40000]"
+                  />
+                  <div className="flex-1">
+                    <p className={`font-medium ${task.completed ? "line-through text-gray-500" : "text-gray-900"}`}>
+                      {task.title}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Week {task.weekNumber}: {task.weekTitle}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         </DialogContent>
       </Dialog>

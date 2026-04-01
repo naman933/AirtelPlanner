@@ -1,6 +1,9 @@
 -- Supabase SQL Setup for Airtel PPO Tracker
 -- Run this in Supabase SQL Editor
 
+-- Enable pgcrypto for password hashing (required)
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -51,16 +54,16 @@ CREATE INDEX IF NOT EXISTS idx_tasks_position ON tasks(position);
 CREATE INDEX IF NOT EXISTS idx_comments_task_id ON comments(task_id);
 
 -- Insert admin user (password: airtel123)
--- Hash generated with bcrypt
+-- Hash generated with pgcrypto crypt() so verify_user_password works
 INSERT INTO users (id, email, password_hash, name, role, password_changed)
 VALUES (
     gen_random_uuid(),
     'admin@airtel.com',
-    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.VTtYF5S5HqKbHC',
+    crypt('airtel123', gen_salt('bf')),
     'Admin',
     'admin',
     TRUE
-) ON CONFLICT (email) DO NOTHING;
+) ON CONFLICT (email) DO UPDATE SET password_hash = crypt('airtel123', gen_salt('bf'));
 
 -- Insert 8 weeks
 INSERT INTO weeks (id, week_number, title) VALUES
@@ -153,7 +156,76 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
 
 -- Create policies for authenticated access
-CREATE POLICY "Allow all for authenticated" ON users FOR ALL USING (true);
-CREATE POLICY "Allow all for authenticated" ON weeks FOR ALL USING (true);
-CREATE POLICY "Allow all for authenticated" ON tasks FOR ALL USING (true);
-CREATE POLICY "Allow all for authenticated" ON comments FOR ALL USING (true);
+-- DROP existing policies first to avoid duplicate name errors on re-run
+DROP POLICY IF EXISTS "Allow all for authenticated" ON users;
+DROP POLICY IF EXISTS "Allow all for authenticated" ON weeks;
+DROP POLICY IF EXISTS "Allow all for authenticated" ON tasks;
+DROP POLICY IF EXISTS "Allow all for authenticated" ON comments;
+
+CREATE POLICY "Allow all for authenticated" ON users FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for authenticated" ON weeks FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for authenticated" ON tasks FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for authenticated" ON comments FOR ALL USING (true) WITH CHECK (true);
+
+-- ============================================================
+-- RPC FUNCTIONS (required by the app — were missing before)
+-- ============================================================
+
+-- Verify a user's password
+CREATE OR REPLACE FUNCTION verify_user_password(user_email TEXT, user_password TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  stored_hash TEXT;
+BEGIN
+  SELECT password_hash INTO stored_hash
+  FROM users
+  WHERE email = lower(user_email);
+
+  IF stored_hash IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
+  RETURN stored_hash = crypt(user_password, stored_hash);
+END;
+$$;
+
+-- Create a new user with a hashed password
+CREATE OR REPLACE FUNCTION create_user_with_password(
+  user_id UUID,
+  user_email TEXT,
+  user_password TEXT,
+  user_name TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  INSERT INTO users (id, email, password_hash, name, role, password_changed)
+  VALUES (
+    user_id,
+    lower(user_email),
+    crypt(user_password, gen_salt('bf')),
+    user_name,
+    'user',
+    FALSE
+  );
+END;
+$$;
+
+-- Update a user's password
+CREATE OR REPLACE FUNCTION update_user_password(user_email TEXT, new_password TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE users
+  SET password_hash = crypt(new_password, gen_salt('bf')),
+      password_changed = TRUE
+  WHERE email = lower(user_email);
+END;
+$$;

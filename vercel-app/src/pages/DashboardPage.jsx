@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAuth, API, formatApiError } from "@/App";
-import axios from "axios";
+import { useAuth, supabase, formatApiError } from "@/App";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,16 +48,43 @@ const DashboardPage = () => {
   // Fetch weeks data
   const fetchWeeks = useCallback(async () => {
     try {
-      const response = await axios.get(`${API}/weeks`);
-      setWeeks(response.data);
+      const { data: weeksData, error } = await supabase
+        .from('weeks')
+        .select('*')
+        .order('week_number');
+
+      if (error) throw error;
+
+      // Get tasks for each week
+      for (const week of weeksData) {
+        const { data: tasks } = await supabase
+          .from('tasks')
+          .select('*')
+          .eq('week_id', week.id)
+          .order('position');
+
+        // Get comments for each task
+        for (const task of tasks || []) {
+          const { data: comments } = await supabase
+            .from('comments')
+            .select('*')
+            .eq('task_id', task.id)
+            .order('created_at');
+          task.comments = comments || [];
+        }
+
+        week.tasks = tasks || [];
+      }
+
+      setWeeks(weeksData);
       // Expand all weeks by default
       const expanded = {};
-      response.data.forEach(week => {
+      weeksData.forEach(week => {
         expanded[week.id] = true;
       });
       setExpandedWeeks(expanded);
     } catch (error) {
-      toast.error(formatApiError(error.response?.data?.detail));
+      toast.error(formatApiError(error));
     }
   }, []);
 
@@ -118,16 +144,18 @@ const DashboardPage = () => {
     setDraggedTask(null);
     setDragOverTask(null);
     
-    // Save to backend
+    // Save to Supabase
     setSaving(true);
     try {
-      await axios.put(`${API}/weeks/${weekId}/tasks/reorder`, {
-        task_ids: newTasks.map(t => t.id)
-      });
+      for (let i = 0; i < newTasks.length; i++) {
+        await supabase
+          .from('tasks')
+          .update({ position: i })
+          .eq('id', newTasks[i].id);
+      }
       toast.success("Tasks reordered");
     } catch (error) {
       toast.error("Failed to save task order");
-      // Revert on error
       fetchWeeks();
     } finally {
       setSaving(false);
@@ -161,12 +189,16 @@ const DashboardPage = () => {
   const updateWeekTitle = async (weekId, title) => {
     setSaving(true);
     try {
-      await axios.put(`${API}/weeks/${weekId}`, { title });
+      await supabase
+        .from('weeks')
+        .update({ title, updated_at: new Date().toISOString() })
+        .eq('id', weekId);
+
       setWeeks(prev => prev.map(w => w.id === weekId ? { ...w, title } : w));
       setEditingWeekTitle(null);
       toast.success("Week title updated");
     } catch (error) {
-      toast.error(formatApiError(error.response?.data?.detail));
+      toast.error(formatApiError(error));
     } finally {
       setSaving(false);
     }
@@ -176,7 +208,11 @@ const DashboardPage = () => {
   const toggleTaskCompletion = async (weekId, taskId, completed) => {
     setSaving(true);
     try {
-      await axios.put(`${API}/weeks/${weekId}/tasks/${taskId}`, { completed: !completed });
+      await supabase
+        .from('tasks')
+        .update({ completed: !completed, updated_at: new Date().toISOString() })
+        .eq('id', taskId);
+
       setWeeks(prev => prev.map(w => {
         if (w.id === weekId) {
           return {
@@ -187,7 +223,7 @@ const DashboardPage = () => {
         return w;
       }));
     } catch (error) {
-      toast.error(formatApiError(error.response?.data?.detail));
+      toast.error(formatApiError(error));
     } finally {
       setSaving(false);
     }
@@ -197,7 +233,11 @@ const DashboardPage = () => {
   const updateTask = async (weekId, taskId, data) => {
     setSaving(true);
     try {
-      await axios.put(`${API}/weeks/${weekId}/tasks/${taskId}`, data);
+      await supabase
+        .from('tasks')
+        .update({ ...data, updated_at: new Date().toISOString() })
+        .eq('id', taskId);
+
       setWeeks(prev => prev.map(w => {
         if (w.id === weekId) {
           return {
@@ -210,7 +250,7 @@ const DashboardPage = () => {
       setEditingTaskId(null);
       toast.success("Task updated");
     } catch (error) {
-      toast.error(formatApiError(error.response?.data?.detail));
+      toast.error(formatApiError(error));
     } finally {
       setSaving(false);
     }
@@ -222,14 +262,32 @@ const DashboardPage = () => {
     
     setSaving(true);
     try {
-      const response = await axios.post(`${API}/weeks/${addTaskDialog.weekId}/tasks`, {
+      // Get max position
+      const { data: existing } = await supabase
+        .from('tasks')
+        .select('position')
+        .eq('week_id', addTaskDialog.weekId)
+        .order('position', { ascending: false })
+        .limit(1);
+
+      const maxPos = existing?.[0]?.position || 0;
+      const taskId = `task-${Date.now()}`;
+
+      const newTask = {
+        id: taskId,
+        week_id: addTaskDialog.weekId,
         title: newTaskTitle,
-        due_date: newTaskDueDate ? format(newTaskDueDate, "yyyy-MM-dd") : null
-      });
+        completed: false,
+        due_date: newTaskDueDate ? format(newTaskDueDate, "yyyy-MM-dd") : null,
+        position: maxPos + 1,
+        created_by: user?.id
+      };
+
+      await supabase.from('tasks').insert(newTask);
       
       setWeeks(prev => prev.map(w => {
         if (w.id === addTaskDialog.weekId) {
-          return { ...w, tasks: [...(w.tasks || []), response.data] };
+          return { ...w, tasks: [...(w.tasks || []), { ...newTask, comments: [] }] };
         }
         return w;
       }));
@@ -239,7 +297,7 @@ const DashboardPage = () => {
       setNewTaskDueDate(null);
       toast.success("Task added");
     } catch (error) {
-      toast.error(formatApiError(error.response?.data?.detail));
+      toast.error(formatApiError(error));
     } finally {
       setSaving(false);
     }
@@ -249,7 +307,9 @@ const DashboardPage = () => {
   const deleteTask = async (weekId, taskId) => {
     setSaving(true);
     try {
-      await axios.delete(`${API}/weeks/${weekId}/tasks/${taskId}`);
+      await supabase.from('comments').delete().eq('task_id', taskId);
+      await supabase.from('tasks').delete().eq('id', taskId);
+
       setWeeks(prev => prev.map(w => {
         if (w.id === weekId) {
           return { ...w, tasks: w.tasks.filter(t => t.id !== taskId) };
@@ -258,7 +318,7 @@ const DashboardPage = () => {
       }));
       toast.success("Task deleted");
     } catch (error) {
-      toast.error(formatApiError(error.response?.data?.detail));
+      toast.error(formatApiError(error));
     } finally {
       setSaving(false);
     }
@@ -270,10 +330,16 @@ const DashboardPage = () => {
     
     setSaving(true);
     try {
-      const response = await axios.post(
-        `${API}/weeks/${commentDialog.weekId}/tasks/${commentDialog.taskId}/comments`,
-        { text: newComment }
-      );
+      const commentId = `comment-${Date.now()}`;
+      const newCommentData = {
+        id: commentId,
+        task_id: commentDialog.taskId,
+        text: newComment,
+        created_by: user?.id,
+        created_by_name: user?.name
+      };
+
+      await supabase.from('comments').insert(newCommentData);
       
       setWeeks(prev => prev.map(w => {
         if (w.id === commentDialog.weekId) {
@@ -281,7 +347,7 @@ const DashboardPage = () => {
             ...w,
             tasks: w.tasks.map(t => {
               if (t.id === commentDialog.taskId) {
-                return { ...t, comments: [...(t.comments || []), response.data] };
+                return { ...t, comments: [...(t.comments || []), newCommentData] };
               }
               return t;
             })
@@ -290,20 +356,15 @@ const DashboardPage = () => {
         return w;
       }));
       
-      // Update the task in the dialog
-      const updatedTask = weeks.find(w => w.id === commentDialog.weekId)
-        ?.tasks.find(t => t.id === commentDialog.taskId);
-      if (updatedTask) {
-        setCommentDialog(prev => ({
-          ...prev,
-          task: { ...updatedTask, comments: [...(updatedTask.comments || []), response.data] }
-        }));
-      }
+      setCommentDialog(prev => ({
+        ...prev,
+        task: { ...prev.task, comments: [...(prev.task?.comments || []), newCommentData] }
+      }));
       
       setNewComment("");
       toast.success("Comment added");
     } catch (error) {
-      toast.error(formatApiError(error.response?.data?.detail));
+      toast.error(formatApiError(error));
     } finally {
       setSaving(false);
     }
@@ -313,9 +374,7 @@ const DashboardPage = () => {
   const deleteComment = async (commentId) => {
     setSaving(true);
     try {
-      await axios.delete(
-        `${API}/weeks/${commentDialog.weekId}/tasks/${commentDialog.taskId}/comments/${commentId}`
-      );
+      await supabase.from('comments').delete().eq('id', commentId);
       
       setWeeks(prev => prev.map(w => {
         if (w.id === commentDialog.weekId) {
@@ -332,7 +391,6 @@ const DashboardPage = () => {
         return w;
       }));
       
-      // Update dialog
       setCommentDialog(prev => ({
         ...prev,
         task: { ...prev.task, comments: (prev.task?.comments || []).filter(c => c.id !== commentId) }
@@ -340,7 +398,7 @@ const DashboardPage = () => {
       
       toast.success("Comment deleted");
     } catch (error) {
-      toast.error(formatApiError(error.response?.data?.detail));
+      toast.error(formatApiError(error));
     } finally {
       setSaving(false);
     }

@@ -1,18 +1,17 @@
 import { useState, useEffect, createContext, useContext } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
-import axios from "axios";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
+import { createClient } from '@supabase/supabase-js';
 import LoginPage from "@/pages/LoginPage";
 import DashboardPage from "@/pages/DashboardPage";
 import UserManagementPage from "@/pages/UserManagementPage";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
-export const API = `${BACKEND_URL}/api`;
-
-// Configure axios defaults
-axios.defaults.withCredentials = true;
+// Supabase client
+const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
+const supabaseKey = process.env.REACT_APP_SUPABASE_ANON_KEY;
+export const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Auth Context
 export const AuthContext = createContext(null);
@@ -25,24 +24,50 @@ export const useAuth = () => {
   return context;
 };
 
+// Helper to format errors
+export const formatApiError = (error) => {
+  if (!error) return "Something went wrong";
+  if (typeof error === "string") return error;
+  if (error.message) return error.message;
+  return "Something went wrong";
+};
+
 const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showPasswordDialog, setShowPasswordDialog] = useState(false);
 
   const checkAuth = async () => {
-    try {
-      const response = await axios.get(`${API}/auth/me`);
-      setUser(response.data);
-      // Check if first login for non-admin user
-      if (response.data.is_first_login) {
-        setShowPasswordDialog(true);
+    const stored = localStorage.getItem('ppo_user');
+    if (stored) {
+      try {
+        const userData = JSON.parse(stored);
+        // Verify user still exists
+        const { data } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', userData.id)
+          .single();
+        
+        if (data) {
+          const userInfo = {
+            id: data.id,
+            email: data.email,
+            name: data.name,
+            role: data.role,
+            password_changed: data.password_changed,
+            is_first_login: data.role !== 'admin' && !data.password_changed
+          };
+          setUser(userInfo);
+          if (userInfo.is_first_login) {
+            setShowPasswordDialog(true);
+          }
+        }
+      } catch (e) {
+        localStorage.removeItem('ppo_user');
       }
-    } catch (error) {
-      setUser(null);
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -51,54 +76,100 @@ const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     try {
-      const response = await axios.post(`${API}/auth/login`, { email, password });
-      setUser(response.data);
+      // Get user by email
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', email.toLowerCase())
+        .single();
+
+      if (error || !userData) {
+        toast.error("Invalid email or password");
+        return { success: false, error: "Invalid email or password" };
+      }
+
+      // Verify password using database function
+      const { data: isValid, error: verifyError } = await supabase
+        .rpc('verify_user_password', {
+          user_email: email.toLowerCase(),
+          user_password: password
+        });
+
+      if (verifyError || !isValid) {
+        toast.error("Invalid email or password");
+        return { success: false, error: "Invalid email or password" };
+      }
+
+      const userInfo = {
+        id: userData.id,
+        email: userData.email,
+        name: userData.name,
+        role: userData.role,
+        password_changed: userData.password_changed,
+        is_first_login: userData.role !== 'admin' && !userData.password_changed
+      };
+
+      localStorage.setItem('ppo_user', JSON.stringify(userInfo));
+      setUser(userInfo);
       toast.success("Logged in successfully");
-      // Check if first login for non-admin user
-      if (response.data.is_first_login) {
+
+      if (userInfo.is_first_login) {
         setShowPasswordDialog(true);
       }
+
       return { success: true };
     } catch (error) {
-      const detail = error.response?.data?.detail;
-      const message = formatApiError(detail);
-      toast.error(message);
-      return { success: false, error: message };
+      toast.error("Login failed");
+      return { success: false, error: "Login failed" };
     }
   };
 
   const logout = async () => {
-    try {
-      await axios.post(`${API}/auth/logout`);
-      setUser(null);
-      setShowPasswordDialog(false);
-      toast.success("Logged out successfully");
-    } catch (error) {
-      console.error("Logout error:", error);
-    }
+    localStorage.removeItem('ppo_user');
+    setUser(null);
+    setShowPasswordDialog(false);
+    toast.success("Logged out successfully");
   };
 
   const changePassword = async (currentPassword, newPassword) => {
     try {
-      await axios.post(`${API}/auth/change-password`, {
-        current_password: currentPassword,
-        new_password: newPassword
-      });
+      const { data: isValid } = await supabase
+        .rpc('verify_user_password', {
+          user_email: user.email,
+          user_password: currentPassword
+        });
+
+      if (!isValid) {
+        toast.error("Current password is incorrect");
+        return { success: false, error: "Current password is incorrect" };
+      }
+
+      // Update password
+      const { error } = await supabase
+        .rpc('update_user_password', {
+          user_email: user.email,
+          new_password: newPassword
+        });
+
+      if (error) throw error;
+
       setUser(prev => ({ ...prev, password_changed: true, is_first_login: false }));
       setShowPasswordDialog(false);
       toast.success("Password changed successfully");
       return { success: true };
     } catch (error) {
-      const detail = error.response?.data?.detail;
-      const message = formatApiError(detail);
-      toast.error(message);
-      return { success: false, error: message };
+      toast.error("Failed to change password");
+      return { success: false, error: "Failed to change password" };
     }
   };
 
   const keepPassword = async () => {
     try {
-      await axios.post(`${API}/auth/keep-password`);
+      await supabase
+        .from('users')
+        .update({ password_changed: true })
+        .eq('id', user.id);
+
       setUser(prev => ({ ...prev, password_changed: true, is_first_login: false }));
       setShowPasswordDialog(false);
       toast.success("Password preference saved");
@@ -110,31 +181,20 @@ const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ 
-      user, 
-      loading, 
-      login, 
-      logout, 
-      checkAuth, 
-      showPasswordDialog, 
+    <AuthContext.Provider value={{
+      user,
+      loading,
+      login,
+      logout,
+      checkAuth,
+      showPasswordDialog,
       setShowPasswordDialog,
       changePassword,
-      keepPassword 
+      keepPassword
     }}>
       {children}
     </AuthContext.Provider>
   );
-};
-
-// Helper to format API errors
-export const formatApiError = (detail) => {
-  if (detail == null) return "Something went wrong. Please try again.";
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail.map((e) => (e && typeof e.msg === "string" ? e.msg : JSON.stringify(e))).filter(Boolean).join(" ");
-  }
-  if (detail && typeof detail.msg === "string") return detail.msg;
-  return String(detail);
 };
 
 // Protected Route component

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAuth, API, formatApiError } from "@/App";
-import axios from "axios";
+import { useAuth, supabase, formatApiError } from "@/App";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,10 +22,14 @@ const UserManagementPage = () => {
 
   const fetchUsers = useCallback(async () => {
     try {
-      const response = await axios.get(`${API}/users`);
-      setUsers(response.data);
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, email, name, role');
+      
+      if (error) throw error;
+      setUsers(data || []);
     } catch (error) {
-      toast.error(formatApiError(error.response?.data?.detail));
+      toast.error(formatApiError(error));
     } finally {
       setLoading(false);
     }
@@ -45,8 +48,23 @@ const UserManagementPage = () => {
 
     setSaving(true);
     try {
-      const response = await axios.post(`${API}/users`, newUser);
-      setUsers(prev => [...prev, response.data]);
+      const { data, error } = await supabase
+        .rpc('create_user_with_password', {
+          user_email: newUser.email.toLowerCase(),
+          user_password: newUser.password,
+          user_name: newUser.name
+        });
+
+      if (error) throw error;
+
+      const newUserData = {
+        id: data,
+        email: newUser.email.toLowerCase(),
+        name: newUser.name,
+        role: 'user'
+      };
+
+      setUsers(prev => [...prev, newUserData]);
       setAddUserDialog(false);
       setNewUser({ email: "", password: "", name: "" });
       toast.success("User added successfully");

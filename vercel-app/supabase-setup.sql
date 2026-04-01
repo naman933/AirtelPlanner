@@ -149,14 +149,25 @@ INSERT INTO tasks (id, week_id, title, position) VALUES
 ('t8-5', 'week-8', 'Send thank-you notes to all key stakeholders', 5)
 ON CONFLICT (id) DO NOTHING;
 
--- Enable Row Level Security (optional but recommended)
+-- Grant table access to anon and authenticated roles
+-- (Required when tables are created via SQL editor — not granted automatically)
+GRANT ALL ON users TO anon, authenticated;
+GRANT ALL ON weeks TO anon, authenticated;
+GRANT ALL ON tasks TO anon, authenticated;
+GRANT ALL ON comments TO anon, authenticated;
+
+-- Grant execute on RPC functions
+GRANT EXECUTE ON FUNCTION verify_user_password(TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION create_user_with_password(UUID, TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION update_user_password(TEXT, TEXT) TO anon, authenticated;
+
+-- Enable Row Level Security
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE weeks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
 
--- Create policies for authenticated access
--- DROP existing policies first to avoid duplicate name errors on re-run
+-- Create policies for all access (DROP first to allow safe re-run)
 DROP POLICY IF EXISTS "Allow all for authenticated" ON users;
 DROP POLICY IF EXISTS "Allow all for authenticated" ON weeks;
 DROP POLICY IF EXISTS "Allow all for authenticated" ON tasks;

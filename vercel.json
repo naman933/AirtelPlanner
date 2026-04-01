@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "installCommand": "cd vercel-app && yarn install",
+  "buildCommand": "cd vercel-app && DISABLE_ESLINT_PLUGIN=true GENERATE_SOURCEMAP=false yarn build",
+  "outputDirectory": "vercel-app/build",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

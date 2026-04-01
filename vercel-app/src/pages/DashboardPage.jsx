@@ -33,6 +33,7 @@ const DashboardPage = () => {
   const [editingWeekTitle, setEditingWeekTitle] = useState(null);
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [loadingData, setLoadingData] = useState(true);
   const [addTaskDialog, setAddTaskDialog] = useState({ open: false, weekId: null });
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskDueDate, setNewTaskDueDate] = useState(null);
@@ -47,6 +48,7 @@ const DashboardPage = () => {
 
   // Fetch weeks data
   const fetchWeeks = useCallback(async () => {
+    setLoadingData(true);
     try {
       const { data: weeksData, error } = await supabase
         .from('weeks')
@@ -85,6 +87,8 @@ const DashboardPage = () => {
       setExpandedWeeks(expanded);
     } catch (error) {
       toast.error(formatApiError(error));
+    } finally {
+      setLoadingData(false);
     }
   }, []);
 
@@ -621,6 +625,15 @@ const DashboardPage = () => {
   // Pad start of month to align with week
   const startDay = monthStart.getDay();
   const paddingDays = Array(startDay).fill(null);
+
+  if (loadingData) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center gap-4">
+        <div className="w-10 h-10 border-4 border-[#E40000] border-t-transparent rounded-full animate-spin"></div>
+        <p className="text-gray-500 text-sm font-medium">Loading your plan...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50" data-testid="dashboard-page">

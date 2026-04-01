@@ -11,7 +11,9 @@ import UserManagementPage from "@/pages/UserManagementPage";
 // Supabase client
 const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
 const supabaseKey = process.env.REACT_APP_SUPABASE_ANON_KEY;
-export const supabase = createClient(supabaseUrl, supabaseKey);
+export const supabase = (supabaseUrl && supabaseKey)
+  ? createClient(supabaseUrl, supabaseKey)
+  : null;
 
 // Auth Context
 export const AuthContext = createContext(null);
@@ -224,6 +226,22 @@ const ProtectedRoute = ({ children, adminOnly = false }) => {
 };
 
 function App() {
+  if (!supabase) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#f9fafb" }}>
+        <div style={{ textAlign: "center", padding: "2rem", background: "white", borderRadius: "8px", boxShadow: "0 1px 4px rgba(0,0,0,0.1)", maxWidth: "480px" }}>
+          <h1 style={{ color: "#E40000", fontWeight: "bold", fontSize: "1.25rem", marginBottom: "0.5rem" }}>Configuration Error</h1>
+          <p style={{ color: "#374151", marginBottom: "0.5rem" }}>Missing required environment variables.</p>
+          <p style={{ color: "#6b7280", fontSize: "0.875rem" }}>
+            Please set <code style={{ background: "#f3f4f6", padding: "2px 4px", borderRadius: "3px" }}>REACT_APP_SUPABASE_URL</code> and{" "}
+            <code style={{ background: "#f3f4f6", padding: "2px 4px", borderRadius: "3px" }}>REACT_APP_SUPABASE_ANON_KEY</code>{" "}
+            in your Vercel project settings under Environment Variables.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <AuthProvider>
       <BrowserRouter>
